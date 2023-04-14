@@ -2,6 +2,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * Copyright 2023 Yuichi Nakamura (for x68kzkbd-pico)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +36,6 @@
 //--------------------------------------------------------------------+
 void led_blinking_task(void);
 
-extern void cdc_app_task(void);
 extern void hid_app_task(void);
 
 /*------------- MAIN -------------*/
@@ -43,7 +43,7 @@ int main(void)
 {
   board_init();
 
-  printf("TinyUSB Host CDC MSC HID Example\r\n");
+  printf("TinyUSB X68000Z Keyboard control test\r\n");
 
   // init host stack on configured roothub port
   tuh_init(BOARD_TUH_RHPORT);
@@ -54,29 +54,11 @@ int main(void)
     tuh_task();
 
     led_blinking_task();
-    cdc_app_task();
     hid_app_task();
   }
 
   return 0;
 }
-
-//--------------------------------------------------------------------+
-// TinyUSB Callbacks
-//--------------------------------------------------------------------+
-
-void tuh_mount_cb(uint8_t dev_addr)
-{
-  // application set-up
-  printf("A device with address %d is mounted\r\n", dev_addr);
-}
-
-void tuh_umount_cb(uint8_t dev_addr)
-{
-  // application tear-down
-  printf("A device with address %d is unmounted \r\n", dev_addr);
-}
-
 
 //--------------------------------------------------------------------+
 // Blinking Task

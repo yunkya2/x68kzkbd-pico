@@ -2,6 +2,7 @@
  * The MIT License (MIT)
  *
  * Copyright (c) 2021, Ha Thach (tinyusb.org)
+ * Copyright 2023 Yuichi Nakamura (for x68kzkbd-pico)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -30,13 +31,11 @@
 // MACRO TYPEDEF CONSTANT ENUM DECLARATION
 //--------------------------------------------------------------------+
 
-// If your host terminal support ansi escape code such as TeraTerm
-// it can be use to simulate mouse cursor movement within terminal
-#define USE_ANSI_ESCAPE   0
+/* X68000Z keyboard Vendor & Product ID */
+#define X68000ZKBD_VID    0x33dd
+#define X68000ZKBD_PID    0x0011
 
-#define MAX_REPORT  4
-
-static uint8_t const keycode2ascii[128][2] =  { HID_KEYCODE_TO_ASCII };
+#define MAX_REPORT  8
 
 // Each HID instance can has multiple reports
 static struct
@@ -46,12 +45,130 @@ static struct
 }hid_info[CFG_TUH_HID];
 
 static void process_kbd_report(hid_keyboard_report_t const *report);
-static void process_mouse_report(hid_mouse_report_t const * report);
 static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len);
+
+static int keybd_dev_addr = 0xff;
+
+//--------------------------------------------------------------------+
+// Keyboard LED control
+//--------------------------------------------------------------------+
+
+static int report_ready = 0;
+static int report_x68000z = 0;
+
+static int led_report_done = 1;
+static int led_report_update = 1;
+static uint8_t led_report_data[65];
+
+void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint8_t report_type, uint16_t len)
+{
+//  printf("report done\n");
+  led_report_done = 1;
+}
+
+static void led_report_task(void)
+{
+  if (!report_ready)
+    return;
+
+  if (!led_report_update || !led_report_done)
+    return;
+
+//  printf("report\n");
+  if (report_x68000z) {
+    tuh_hid_set_report(keybd_dev_addr, 1, 10,
+                       HID_REPORT_TYPE_FEATURE, led_report_data, sizeof(led_report_data));
+  }
+  
+  led_report_update = led_report_done = 0;
+}
+
+static void led_report_set(uint64_t led)
+{
+  int i;
+
+  printf("LED: %014llx\n", led);
+
+  led_report_data[0] = 10;
+  led_report_data[1] = 0xf8;
+  for (i = 0; i < 8; i++) {
+    if (i == 5)
+      continue;
+    led_report_data[7 + i] = led & 0xff;
+    led >>= 8;
+  }
+
+  led_report_update = 1;
+}
+
+//--------------------------------------------------------------------+
+// TinyUSB Callbacks
+//--------------------------------------------------------------------+
+
+void tuh_mount_cb(uint8_t dev_addr)
+{
+  // application set-up
+  printf("A device with address %d is mounted\r\n", dev_addr);
+
+  uint16_t vid, pid;
+  tuh_vid_pid_get(dev_addr, &vid, &pid);
+  printf("Vendor ID: %04x  Product ID: %04x\r\n", vid, pid);
+  if (vid == X68000ZKBD_VID && pid == X68000ZKBD_PID) {
+    printf("X68000Z keyboard connected\n");
+    report_x68000z = 1;
+  } else {
+    printf("Generic keyboard connected\n");
+    report_x68000z = 0;
+  }
+
+  report_ready = 1;
+}
+
+void tuh_umount_cb(uint8_t dev_addr)
+{
+  // application tear-down
+  printf("A device with address %d is unmounted \r\n", dev_addr);
+  report_ready = 0;
+}
+
+//--------------------------------------------------------------------+
+// App main task
+//--------------------------------------------------------------------+
+
+static uint64_t demo_pattern[] = {
+  0x00000000000000, 0x000000000000ff, 0x0000000000ffff, 0x00000000ffffff, 0x000000ffffffff,
+  0x0000ffffffffff, 0x00ffffffffffff, 0xffffffffffffff, 0xffffffffffff00, 0xffffffffff0000,
+  0xffffffff000000, 0xffffff00000000, 0xffff0000000000, 0xff000000000000, 0x00000000000000,
+  0x00000000000000, 0x10101010101010, 0x20202020202020, 0x30303030303030, 0x40404040404040,
+  0x50505050505050, 0x80808080808080, 0xf0f0f0f0f0f0f0, 0xffffffffffffff, 0xf0f0f0f0f0f0f0,
+  0x80808080808080, 0x50505050505050, 0x40404040404040, 0x30303030303030, 0x20202020202020,
+  0x10101010101010, 0x00000000000000,
+  0x00000000000010, 0x00000000001020, 0x00000000102030, 0x00000010203040, 0x00001020304050,
+  0x00102030405080, 0x102030405080f0, 0x2030405080f0ff, 0x30405080f0fff0, 0x405080f0fff080,
+  0x5080f0fff08050, 0x80f0fff0805040, 0xf0fff080504030, 0xfff08050403020, 0xf0805040302010,
+  0x80504030201000, 0x50403020100000, 0x40302010000000, 0x30201000000000, 0x20100000000000,
+  0x10000000000000, 0x00000000000000,
+};
 
 void hid_app_task(void)
 {
-  // nothing to do
+  const uint32_t interval_ms = 200;
+  static uint32_t start_ms = 0;
+
+  if (!report_ready)
+    return;
+
+  led_report_task();
+  if ( board_millis() - start_ms < interval_ms) return; // not enough time
+  start_ms += interval_ms;
+
+  static int i = 0;
+
+  led_report_set(demo_pattern[i]);
+  i++;
+  if (i >= (sizeof(demo_pattern) / sizeof(demo_pattern[0]))) {
+    i = 0;
+  }
 }
 
 //--------------------------------------------------------------------+
@@ -81,6 +198,13 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     printf("HID has %u reports \r\n", hid_info[instance].report_count);
   }
 
+  if ( itf_protocol == HID_ITF_PROTOCOL_KEYBOARD )
+  {
+    hid_info[instance].report_count = tuh_hid_parse_report_descriptor(hid_info[instance].report_info, MAX_REPORT, desc_report, desc_len);
+    printf("HID has %u reports \r\n", hid_info[instance].report_count);
+    keybd_dev_addr = dev_addr;
+  }
+
   // request to receive report
   // tuh_hid_report_received_cb() will be invoked when report is available
   if ( !tuh_hid_receive_report(dev_addr, instance) )
@@ -93,6 +217,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
   printf("HID device address = %d, instance = %d is unmounted\r\n", dev_addr, instance);
+
+  keybd_dev_addr = 0xff;
 }
 
 // Invoked when received report from device via interrupt endpoint
@@ -105,16 +231,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     case HID_ITF_PROTOCOL_KEYBOARD:
       TU_LOG2("HID receive boot keyboard report\r\n");
       process_kbd_report( (hid_keyboard_report_t const*) report );
-    break;
-
-    case HID_ITF_PROTOCOL_MOUSE:
-      TU_LOG2("HID receive boot mouse report\r\n");
-      process_mouse_report( (hid_mouse_report_t const*) report );
-    break;
-
-    default:
-      // Generic report requires matching ReportID and contents with previous parsed report info
-      process_generic_report(dev_addr, instance, report, len);
     break;
   }
 
@@ -129,168 +245,10 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 // Keyboard
 //--------------------------------------------------------------------+
 
-// look up new key in previous keys
-static inline bool find_key_in_report(hid_keyboard_report_t const *report, uint8_t keycode)
-{
-  for(uint8_t i=0; i<6; i++)
-  {
-    if (report->keycode[i] == keycode)  return true;
-  }
-
-  return false;
-}
-
 static void process_kbd_report(hid_keyboard_report_t const *report)
 {
-  static hid_keyboard_report_t prev_report = { 0, 0, {0} }; // previous report to check key released
-
-  //------------- example code ignore control (non-printable) key affects -------------//
-  for(uint8_t i=0; i<6; i++)
-  {
-    if ( report->keycode[i] )
-    {
-      if ( find_key_in_report(&prev_report, report->keycode[i]) )
-      {
-        // exist in previous report means the current key is holding
-      }else
-      {
-        // not existed in previous report means the current key is pressed
-        bool const is_shift = report->modifier & (KEYBOARD_MODIFIER_LEFTSHIFT | KEYBOARD_MODIFIER_RIGHTSHIFT);
-        uint8_t ch = keycode2ascii[report->keycode[i]][is_shift ? 1 : 0];
-        putchar(ch);
-        if ( ch == '\r' ) putchar('\n'); // added new line for enter key
-
-        fflush(stdout); // flush right away, else nanolib will wait for newline
-      }
-    }
-    // TODO example skips key released
-  }
-
-  prev_report = *report;
-}
-
-//--------------------------------------------------------------------+
-// Mouse
-//--------------------------------------------------------------------+
-
-void cursor_movement(int8_t x, int8_t y, int8_t wheel)
-{
-#if USE_ANSI_ESCAPE
-  // Move X using ansi escape
-  if ( x < 0)
-  {
-    printf(ANSI_CURSOR_BACKWARD(%d), (-x)); // move left
-  }else if ( x > 0)
-  {
-    printf(ANSI_CURSOR_FORWARD(%d), x); // move right
-  }
-
-  // Move Y using ansi escape
-  if ( y < 0)
-  {
-    printf(ANSI_CURSOR_UP(%d), (-y)); // move up
-  }else if ( y > 0)
-  {
-    printf(ANSI_CURSOR_DOWN(%d), y); // move down
-  }
-
-  // Scroll using ansi escape
-  if (wheel < 0)
-  {
-    printf(ANSI_SCROLL_UP(%d), (-wheel)); // scroll up
-  }else if (wheel > 0)
-  {
-    printf(ANSI_SCROLL_DOWN(%d), wheel); // scroll down
-  }
-
-  printf("\r\n");
-#else
-  printf("(%d %d %d)\r\n", x, y, wheel);
-#endif
-}
-
-static void process_mouse_report(hid_mouse_report_t const * report)
-{
-  static hid_mouse_report_t prev_report = { 0 };
-
-  //------------- button state  -------------//
-  uint8_t button_changed_mask = report->buttons ^ prev_report.buttons;
-  if ( button_changed_mask & report->buttons)
-  {
-    printf(" %c%c%c ",
-       report->buttons & MOUSE_BUTTON_LEFT   ? 'L' : '-',
-       report->buttons & MOUSE_BUTTON_MIDDLE ? 'M' : '-',
-       report->buttons & MOUSE_BUTTON_RIGHT  ? 'R' : '-');
-  }
-
-  //------------- cursor movement -------------//
-  cursor_movement(report->x, report->y, report->wheel);
-}
-
-//--------------------------------------------------------------------+
-// Generic Report
-//--------------------------------------------------------------------+
-static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len)
-{
-  (void) dev_addr;
-
-  uint8_t const rpt_count = hid_info[instance].report_count;
-  tuh_hid_report_info_t* rpt_info_arr = hid_info[instance].report_info;
-  tuh_hid_report_info_t* rpt_info = NULL;
-
-  if ( rpt_count == 1 && rpt_info_arr[0].report_id == 0)
-  {
-    // Simple report without report ID as 1st byte
-    rpt_info = &rpt_info_arr[0];
-  }else
-  {
-    // Composite report, 1st byte is report ID, data starts from 2nd byte
-    uint8_t const rpt_id = report[0];
-
-    // Find report id in the array
-    for(uint8_t i=0; i<rpt_count; i++)
-    {
-      if (rpt_id == rpt_info_arr[i].report_id )
-      {
-        rpt_info = &rpt_info_arr[i];
-        break;
-      }
-    }
-
-    report++;
-    len--;
-  }
-
-  if (!rpt_info)
-  {
-    printf("Couldn't find the report info for this report !\r\n");
-    return;
-  }
-
-  // For complete list of Usage Page & Usage checkout src/class/hid/hid.h. For examples:
-  // - Keyboard                     : Desktop, Keyboard
-  // - Mouse                        : Desktop, Mouse
-  // - Gamepad                      : Desktop, Gamepad
-  // - Consumer Control (Media Key) : Consumer, Consumer Control
-  // - System Control (Power key)   : Desktop, System Control
-  // - Generic (vendor)             : 0xFFxx, xx
-  if ( rpt_info->usage_page == HID_USAGE_PAGE_DESKTOP )
-  {
-    switch (rpt_info->usage)
-    {
-      case HID_USAGE_DESKTOP_KEYBOARD:
-        TU_LOG1("HID receive keyboard report\r\n");
-        // Assume keyboard follow boot report layout
-        process_kbd_report( (hid_keyboard_report_t const*) report );
-      break;
-
-      case HID_USAGE_DESKTOP_MOUSE:
-        TU_LOG1("HID receive mouse report\r\n");
-        // Assume mouse follow boot report layout
-        process_mouse_report( (hid_mouse_report_t const*) report );
-      break;
-
-      default: break;
-    }
-  }
+  printf("mod:%02x key:%02x %02x %02x %02x %02x %02x\n",
+          report->modifier,
+          report->keycode[0], report->keycode[1], report->keycode[2],
+          report->keycode[3], report->keycode[4], report->keycode[5]);
 }
